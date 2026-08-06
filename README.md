@@ -15,7 +15,7 @@ On top of that sits a second, longer-lived cookie that does a different job:
 > it signs in from. Not their PC, their *browser*. Admins are exempt, and an
 > admin is the only one who can undo a binding.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for putting it on Vercel + Render + Neon.
+See [DEPLOYMENT.md](DEPLOYMENT.md) for putting it on Vercel + Koyeb + Neon.
 
 > **Want to prove it rather than take it on trust?** Section 4 is the five-minute
 > version — the test suite, the browser, the command line, the database.
@@ -195,8 +195,7 @@ cookie/
 │     ├─ api.js                   ◆ the fetch() calls to Java
 │     └─ brutal.css               ◆ the neo-brutalist theme
 │
-├─ render.yaml                    ◆ the API's deployment blueprint
-└─ DEPLOYMENT.md                  ◆ Vercel + Render + Neon, start to finish
+└─ DEPLOYMENT.md                  ◆ Vercel + Koyeb + Neon, start to finish
 ```
 
 ◆ = new or changed by the device-binding work.
@@ -590,7 +589,7 @@ Everything security-relevant is in `backend/src/main/resources/application.prope
 
 Every one of these has an environment-variable override (`APP_COOKIE_SECURE`,
 `SPRING_DATASOURCE_URL`, and so on), which is why there is no `prod` profile:
-the same jar runs on your laptop and on Render, and the environment is the only
+the same jar runs on your laptop and on Koyeb, and the environment is the only
 difference. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 **One free hardening step:** rename the cookie to `__Host-sid`. Browsers give any
@@ -668,7 +667,7 @@ production-shaped; these are what remain:
 5. **The certificate is self-signed**, so it proves the traffic is encrypted but
    proves nothing about who is at the other end.
 6. **The H2 console is enabled.** Fine on a laptop; a wide-open door on a server.
-   Set `H2_CONSOLE_ENABLED=false` when deploying (`render.yaml` already does).
+   Set `H2_CONSOLE_ENABLED=false` when deploying (the Dockerfile already does).
 7. **`ddl-auto=update` lets Hibernate alter the live schema at startup.** Fine
    for a demo; a real service uses Flyway, so schema changes are reviewed files.
 8. **Device binding is a cookie, and behaves like one.** A worker who clears

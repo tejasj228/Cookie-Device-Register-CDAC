@@ -584,7 +584,7 @@ pretending there are none.
    but proves nothing about who is at the other end. Production means a real CA
    certificate, or TLS terminated at a proxy in front of this app.
 6. **The H2 console is enabled.** Fine on a laptop, a wide-open door on a server.
-   Set `H2_CONSOLE_ENABLED=false` before anything is deployed (`render.yaml`
+   Set `H2_CONSOLE_ENABLED=false` before anything is deployed (the Dockerfile
    already does).
 7. **Device binding is a cookie, and behaves like one.** A worker who clears
    their cookies is locked out until an admin resets them, and a worker who

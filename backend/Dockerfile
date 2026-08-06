@@ -47,10 +47,28 @@ COPY --from=build /build/target/*.jar app.jar
 #  speaks plain http to this process over its internal network. The app has no
 #  certificate and needs none. The browser's connection is still HTTPS, which
 #  is what the Secure cookie attribute cares about.
+#  The JVM flags are sized for a SMALL free instance (Koyeb's free tier is
+#  512 MB), and the number is lower than it looks like it should be on purpose.
+#
+#  MaxRAMPercentage governs the HEAP only. A Spring Boot process also needs
+#  metaspace, code cache, thread stacks and direct buffers on top of it —
+#  realistically another ~150 MB here. At 75% of 512 MB the heap alone is
+#  384 MB, and 384 + 150 is over the limit, so the container gets OOM-killed
+#  under load rather than at startup: the worst kind of failure, because it
+#  looks like a crash bug instead of a memory setting.
+#
+#  60% leaves roughly 300 MB of heap and comfortable room for the rest. Raise it
+#  if you move to a bigger instance.
+#
+#  SerialGC because this instance has a fraction of a CPU. G1 runs concurrent
+#  collector threads that need cores this container does not have, and it costs
+#  memory to hold its region bookkeeping. The JVM would very likely pick Serial
+#  on its own at this size; saying so explicitly means a change of base image
+#  cannot silently flip it.
 ENV SERVER_SSL_ENABLED=false \
     H2_CONSOLE_ENABLED=false \
     APP_COOKIE_SECURE=true \
-    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75"
+    JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=60 -XX:+UseSerialGC"
 
 # Documentation only — the platform injects the real port as PORT, and
 # application.properties reads it.

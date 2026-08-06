@@ -1,11 +1,11 @@
-# Deploying: Vercel + Render + Neon
+# Deploying: Vercel + Koyeb + Neon
 
 The app is one thing to a browser and three things to you.
 
 | Piece | Where | Why there |
 |---|---|---|
 | React build | **Vercel** | Static files on a CDN, which is what Vercel is best at |
-| Spring Boot API | **Render** (Docker) | Vercel cannot run a JVM — see below |
+| Spring Boot API | **Koyeb** (Docker) | Vercel cannot run a JVM — see below |
 | Postgres | **Neon** | Managed, free tier, no server to look after |
 
 ---
@@ -13,20 +13,42 @@ The app is one thing to a browser and three things to you.
 ## Why the backend is not on Vercel
 
 Vercel runs short-lived serverless functions in JavaScript, Python, Go and Ruby.
-It does not run a long-lived JVM process, so there is no way to deploy a Spring
-Boot application there. This is not a limitation to work around — it is a
-different shape of platform.
+It has no Java runtime and, more fundamentally, no product that runs a long-lived
+process or a container. So there is no way to deploy Spring Boot there.
 
-So the API goes on a container host. Render is used below because its free tier
-needs no card, but **nothing here is Render-specific**: the same `backend/Dockerfile`
-runs unchanged on Railway, Fly.io, Koyeb, or any box with Docker on it.
+It is not only the missing runtime. This app takes **~3 seconds** to start a
+Spring context, which a platform that scales to zero would pay on every cold
+request; the hourly `@Scheduled` session purge needs a live process and would
+simply never fire; and Hikari's connection pool assumes one long-lived server
+rather than N concurrent function instances.
+
+So the API goes on a container host, and **nothing here is Koyeb-specific** — the
+same `backend/Dockerfile` runs unchanged anywhere that takes a container.
+
+### Why Koyeb rather than Render
+
+Koyeb's free instance is **always on**. Render's free tier sleeps after 15 minutes
+idle and takes ~50 seconds to wake, which makes the first login after any quiet
+spell look broken. For something you will demo, that difference matters more than
+anything else on the list.
+
+| | Free instance | Sleeps? | Card needed? |
+|---|---|---|---|
+| **Koyeb** | 0.1 vCPU, 512 MB | **no** | usually not |
+| Render | 0.1 vCPU, 512 MB | yes, ~50s wake | no |
+| Fly.io | free allowance retired | n/a | yes, $5/mo minimum |
+| Railway | ~500 compute-hours trial | no | yes, after the trial |
+
+512 MB is small, and `backend/Dockerfile` is tuned for it — the JVM flags cap the
+heap at 60% rather than the usual 75%, because heap is not the only thing in the
+container and 75% would get it OOM-killed under load.
 
 ### The rewrite is the important part
 
-`frontend/vercel.json` forwards `/api/*` from the Vercel domain to Render:
+`frontend/vercel.json` forwards `/api/*` from the Vercel domain to Koyeb:
 
 ```
-browser ──► your-app.vercel.app/api/login ──► cookie-backend.onrender.com/api/login
+browser ──► your-app.vercel.app/api/login ──► your-api.koyeb.app/api/login
             (the only host the browser ever sees)
 ```
 
@@ -49,7 +71,7 @@ at the bottom of this file, and it is strictly worse.
 ## 1. Neon — the database
 
 1. Create a project at [neon.tech](https://neon.tech). Any region; pick one near
-   your Render region to save a few milliseconds per query.
+   your Koyeb region to save a few milliseconds per query.
 2. Open **Connection Details** and copy the connection string. Neon shows you a
    `postgresql://user:pass@host/db` URL — **JDBC needs a different shape**, so
    convert it:
@@ -68,6 +90,10 @@ at the bottom of this file, and it is strictly worse.
    of the URL into their own variables, and `sslmode=require` kept — the
    connection crosses the public internet.
 
+3. If Neon offers you a **pooled** connection string, use it. The pooler keeps a
+   handful of app connections from becoming a handful more every time the
+   instance restarts.
+
 No schema to create. `spring.jpa.hibernate.ddl-auto=update` builds `APP_USER` and
 `USER_SESSION` on first boot. (For anything real you would replace that with
 Flyway, so schema changes are reviewed files rather than something Hibernate
@@ -75,61 +101,93 @@ infers at startup and applies to a live database on its own.)
 
 ---
 
-## 2. Render — the API
+## 2. Koyeb — the API
 
-Push the repo to GitHub, then either point Render at `render.yaml` (**New →
-Blueprint**) or create a web service by hand with:
+Sign in at [koyeb.com](https://koyeb.com) with GitHub, then **Create Web Service**:
 
-- **Runtime:** Docker
-- **Dockerfile path:** `backend/Dockerfile`
-- **Docker context:** `backend`
-- **Health check path:** `/api/me`
+| Field | Value |
+|---|---|
+| Source | **GitHub** → `Cookie-Device-Register-CDAC` |
+| Branch | `main` |
+| Builder | **Dockerfile** |
+| Dockerfile location | `backend/Dockerfile` |
+| Work directory | `backend` |
+| Instance | **Free** |
+| Port | `8000` |
+| Health check path | `/api/me` |
+
+Two of those need a word of explanation.
+
+**Work directory `backend`.** This tells Koyeb to treat `backend/` as the Docker
+build context. The Dockerfile copies `pom.xml` and `src` as if it were sitting in
+that folder, so pointing the context at the repo root would fail to find them.
+
+**Port.** Koyeb's default service port is 8000, and the app reads `${PORT:8443}`
+— so either set Koyeb's port to 8000 and add a `PORT=8000` variable, or set both
+to whatever you prefer. They just have to agree. The health check on `/api/me` is
+a good liveness signal because it answers `{"found":false}` with no cookie, which
+proves the database is reachable too.
 
 Then set the environment variables:
 
 | Variable | Value | Why |
 |---|---|---|
+| `PORT` | `8000` | must match the service port above |
 | `SPRING_DATASOURCE_URL` | the `jdbc:` URL from step 1 | |
 | `SPRING_DATASOURCE_USERNAME` | Neon user | |
-| `SPRING_DATASOURCE_PASSWORD` | Neon password | |
+| `SPRING_DATASOURCE_PASSWORD` | Neon password | mark it **Secret** |
 | `APP_BOOTSTRAP_ADMIN_USERNAME` | your admin login | **set this** |
-| `APP_BOOTSTRAP_ADMIN_PASSWORD` | a real password | **set this** — the default is `admin`/`admin` |
-| `SERVER_SSL_ENABLED` | `false` | Render terminates HTTPS at its edge |
+| `APP_BOOTSTRAP_ADMIN_PASSWORD` | a real password | **set this**, mark it Secret — the default is `admin`/`admin` |
+| `SERVER_SSL_ENABLED` | `false` | Koyeb terminates HTTPS at its edge |
 | `APP_COOKIE_SECURE` | `true` | the *browser's* connection is still HTTPS |
 | `APP_COOKIE_SAME_SITE` | `Lax` | correct as long as you use the rewrite |
 | `H2_CONSOLE_ENABLED` | `false` | |
 
-**`SERVER_SSL_ENABLED=false` is not a downgrade.** Render's load balancer serves
-real, CA-signed HTTPS to the browser and speaks plain HTTP to your container over
-its own internal network. That is how essentially every deployed app works, and
-it is why the container ships no certificate. The cookies stay `Secure` because
-what `Secure` cares about is the browser's connection, which is encrypted.
+The last four are already defaults in the Dockerfile, so you can skip them; they
+are listed so you know what is in force and where to change it.
 
-Note the port: the app reads `${PORT:8443}`, and Render injects `PORT`. Nothing to
-set.
+**`SERVER_SSL_ENABLED=false` is not a downgrade.** Koyeb's edge serves real,
+CA-signed HTTPS to the browser and speaks plain HTTP to your container over its
+internal network. That is how essentially every deployed app works, and it is why
+the container ships no certificate. The cookies stay `Secure` because what
+`Secure` cares about is the browser's connection, which is encrypted.
 
-**Free tier caveat:** instances sleep after 15 minutes idle and take ~50 seconds
-to wake. The first login after a quiet spell will look broken and is not. Upgrade
-the instance, or warm it with a cron ping, if that matters.
+The first build takes a few minutes — it is compiling a Spring Boot app from
+scratch. When it goes green, note your URL: something like
+`your-service-yourorg.koyeb.app`. Check it works:
+
+```bash
+curl https://your-service-yourorg.koyeb.app/api/me
+```
+
+You want `{"found":false}`. That is the whole stack answering: Koyeb routed it,
+Spring handled it, and Neon was reachable.
 
 ---
 
-## 3. Vercel — the frontend
+## 3. Point the frontend at it
 
-**Before deploying, edit `frontend/vercel.json`** and put your Render hostname in:
+Edit `frontend/vercel.json` and replace the placeholder with your Koyeb hostname:
 
 ```json
 {
   "source": "/api/:path*",
-  "destination": "https://cookie-backend-abc123.onrender.com/api/:path*"
+  "destination": "https://your-service-yourorg.koyeb.app/api/:path*"
 }
 ```
 
-The placeholder is `REPLACE-WITH-YOUR-BACKEND.onrender.com`. It has to be a
-literal — Vercel does not expand environment variables inside rewrite
-destinations.
+It has to be a literal — Vercel does not expand environment variables inside
+rewrite destinations. Commit and push:
 
-Then import the repo at [vercel.com](https://vercel.com) with:
+```bash
+git add frontend/vercel.json && git commit -m "Point the API rewrite at Koyeb" && git push
+```
+
+---
+
+## 4. Vercel — the frontend
+
+Import the repo at [vercel.com](https://vercel.com) with:
 
 - **Root Directory:** `frontend`
 - Framework, build command and output directory are all picked up from
@@ -140,7 +198,7 @@ the frontend call relative `/api/...` URLs and lets the rewrite do its job.
 
 ---
 
-## 4. After the first deploy
+## 5. After the first deploy
 
 1. Open the Vercel URL. You should get the sign-in panel.
 2. Sign in as your admin. You should see **Workstations** — an empty list.
@@ -153,9 +211,27 @@ the frontend call relative `/api/...` URLs and lets the rewrite do its job.
 5. Sign in as the admin, reset that worker, and confirm they can now register the
    second browser.
 
-If step 3 shows no cookies at all, the rewrite is not reaching Render — check the
+If step 3 shows no cookies at all, the rewrite is not reaching Koyeb — check the
 hostname in `vercel.json` and look at the Network tab for the status of
 `/api/login`.
+
+---
+
+## Using a different host instead
+
+The Dockerfile is the whole deployment, so every container host is the same four
+steps: point it at the repo, tell it `backend/Dockerfile` with `backend` as the
+context, set the environment variables from step 2, and put the resulting
+hostname into `vercel.json`. Only the dashboard differs.
+
+- **Railway** — the smoothest UI of the lot. Free trial credit, then $5/month.
+- **Fly.io** — excellent, Docker-native, no free allowance for new accounts
+  ($5/month minimum). Needs a `fly.toml`; `fly launch --dockerfile backend/Dockerfile`
+  generates one.
+- **Google Cloud Run** — a genuinely generous always-free tier and very fast cold
+  starts, but it scales to zero and the GCP console is a lot of platform to meet
+  for one container.
+- **Render** — works fine, but the free tier sleeps.
 
 ---
 
@@ -187,10 +263,10 @@ live risk.
 
 | Where | Variable | Value |
 |---|---|---|
-| Vercel | `REACT_APP_API_BASE` | `https://your-backend.onrender.com` |
-| Render | `APP_CORS_ALLOWED_ORIGINS` | `https://your-app.vercel.app` |
-| Render | `APP_COOKIE_SAME_SITE` | `None` |
-| Render | `APP_COOKIE_SECURE` | `true` (browsers reject `None` without it) |
+| Vercel | `REACT_APP_API_BASE` | `https://your-service-yourorg.koyeb.app` |
+| Koyeb | `APP_CORS_ALLOWED_ORIGINS` | `https://your-app.vercel.app` |
+| Koyeb | `APP_COOKIE_SAME_SITE` | `None` |
+| Koyeb | `APP_COOKIE_SECURE` | `true` (browsers reject `None` without it) |
 
 `APP_CORS_ALLOWED_ORIGINS` takes an explicit comma-separated list and never `*` —
 a wildcard is illegal alongside credentialed requests, because "any site may call
