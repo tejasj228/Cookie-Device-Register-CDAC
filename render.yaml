@@ -1,0 +1,69 @@
+# =============================================================================
+#  Render blueprint for the Spring Boot backend
+# =============================================================================
+#  WHY THE BACKEND IS NOT ON VERCEL
+#  -----------------------------------------------------------------------
+#  Vercel runs JavaScript, Python, Go and Ruby functions. It does not run a
+#  long-lived JVM process, so a Spring Boot app cannot be deployed there — not
+#  as a limitation to work around, just a different shape of platform.
+#
+#  So the deployment is split, and the split is invisible to the browser:
+#
+#    Vercel   the React build, plus a rewrite that forwards /api/* to Render
+#    Render   this container, the only thing that ever touches the database
+#    Neon     managed Postgres
+#
+#  The rewrite is the part that matters. Because the browser only ever talks to
+#  the Vercel hostname, the page and the API are the same origin as far as it is
+#  concerned, so both cookies stay first-party and SameSite=Lax — no CORS, no
+#  SameSite=None, and the CSRF protection Lax gives us stays intact.
+#
+#  Any container host works here (Railway, Fly.io, Koyeb); Render is spelled out
+#  because its free tier needs no card. Note that free instances sleep after 15
+#  minutes idle and take ~50s to wake, so the first login after a quiet spell is
+#  slow. That is the free tier, not the app.
+# =============================================================================
+
+services:
+  - type: web
+    name: cookie-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /api/me      # answers {"found":false} with no cookie — a
+                                  # perfectly good liveness signal, and one that
+                                  # proves the DB is reachable too
+    envVars:
+      # ---- Neon ----
+      # Set these in the Render dashboard, not here. A password committed to a
+      # repository is a password you have to rotate, and `sync: false` is how
+      # you tell Render "prompt me for this, do not expect it in the file".
+      - key: SPRING_DATASOURCE_URL
+        sync: false
+      - key: SPRING_DATASOURCE_USERNAME
+        sync: false
+      - key: SPRING_DATASOURCE_PASSWORD
+        sync: false
+
+      # ---- the first administrator ----
+      # Without an admin nobody can reset a locked-out worker. Set a real
+      # password here; leaving it unset gives you admin/admin.
+      - key: APP_BOOTSTRAP_ADMIN_USERNAME
+        sync: false
+      - key: APP_BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+
+      # ---- how this process runs ----
+      # Render terminates HTTPS at its edge and speaks http to the container.
+      - key: SERVER_SSL_ENABLED
+        value: "false"
+      # The browser's connection is still HTTPS, so the cookies stay Secure.
+      - key: APP_COOKIE_SECURE
+        value: "true"
+      # Lax works because the Vercel rewrite keeps everything same-origin.
+      # Only change this to None if you abandon the rewrite for direct CORS.
+      - key: APP_COOKIE_SAME_SITE
+        value: "Lax"
+      - key: H2_CONSOLE_ENABLED
+        value: "false"

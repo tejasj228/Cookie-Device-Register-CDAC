@@ -1,0 +1,16 @@
+# Everything here would either bloat the build context or, worse, end up baked
+# into an image that gets pushed to a registry.
+
+target/
+data/
+
+# The local self-signed keystore is a private key. It must never travel into an
+# image — the container terminates no TLS at all, so it has nothing to do there
+# either.
+src/main/resources/keystore.p12
+*.p12
+*.jks
+
+.git/
+.gitignore
+*.md

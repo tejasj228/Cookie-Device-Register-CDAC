@@ -1,0 +1,991 @@
+/* ==========================================================================
+   NEO-BRUTALIST AUTH PANEL
+   --------------------------------------------------------------------------
+   Flat card stock on a printed field: the panel is a heavy bordered slab
+   that casts a hard shadow, and everything on it behaves like stamped card.
+
+   The look comes from four rules, applied without exception:
+     1. Nothing is round.            border-radius: 0, everywhere.
+     2. Every edge is drawn.         3px solid ink on anything that is a thing.
+     3. Shadows are hard, not soft.  offset, zero blur, pure ink.
+     4. Controls have PRESS PHYSICS. hover lifts, click drives it into the page
+                                     and collapses the shadow to nothing.
+
+   Rule 4 is the signature. It makes the interface feel like stamped card
+   rather than glass, and it is why every interactive element shares the same
+   transform/box-shadow transition.
+   ========================================================================== */
+
+:root {
+  /* ---- palette ---------------------------------------------------------
+     Warm ink rather than #000 so it reads as printed, not as a screen.     */
+  --ink: #14110f;
+  --paper: #fffcf2;
+  /*
+     The page field is a warm bone — one step down from the panel's card
+     stock, so the panel reads as a lighter slab resting on it. The separation
+     is carried by the 3px border and the hard shadow rather than by colour
+     contrast, which is exactly how this style wants to work.
+  */
+  --ground: #f1ece2;
+
+  /*
+     The periwinkle that used to be the background is not thrown away. It is
+     now the dot grid and one of the shapes, so the hue still runs through the
+     page instead of disappearing with the old background.
+  */
+  --periwinkle: #7b6cff;
+  --dot: rgba(123, 108, 255, 0.42);
+
+  --lime: #c9f73d; /* primary action */
+  --pink: #ff5c9e; /* active state */
+  --cyan: #4fe3e3; /* focus */
+  --tangerine: #ff8a3d; /* the stamp */
+
+  --danger: #ff4438;
+
+  /* ---- the hard shadow, at three depths ---- */
+  --lift-0: 3px 3px 0 var(--ink);
+  --lift-1: 6px 6px 0 var(--ink);
+  --lift-2: 9px 9px 0 var(--ink);
+  --lift-panel: 12px 12px 0 var(--ink);
+
+  --border: 3px solid var(--ink);
+  --border-thin: 2px solid var(--ink);
+
+  /* one easing for everything, so the whole UI moves with one personality */
+  --snap: cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* the stage owns scrolling, so the page itself must never gain a scrollbar */
+  overflow: hidden;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --------------------------------------------------------------------------
+   The field the ticket sits on: flat colour + a printed dot grid + big
+   outlined shapes drifting behind. Flat fills only — no gradients, no blur.
+   -------------------------------------------------------------------------- */
+
+/*
+  Centring that does not clip.
+
+  `place-items: center` looks right until the content is taller than the
+  viewport — then the overflow spills off the TOP and becomes unreachable,
+  because you cannot scroll above the origin. A flex container plus
+  `margin: auto` on the child centres identically when there is room and
+  degrades to a normal, fully scrollable box when there is not.
+
+  The scrolling also happens HERE rather than on <body>, so the page itself
+  never grows and never gains a scrollbar. Switching to the register tab adds
+  two fields without the whole page shifting underneath you.
+*/
+.stage {
+  position: relative;
+  /*
+    height, NOT min-height. With min-height the box simply grows to fit the
+    register form, pushes past the viewport, and hands scrolling back to
+    <body> — which is the clipping bug all over again. A bounded height is
+    what makes this element the scroll container.
+  */
+  height: 100dvh;
+  display: flex;
+  padding: 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* periwinkle dots — ink dots read as harsh grit on a light ground */
+  background-image: radial-gradient(var(--dot) 2px, transparent 2px);
+  background-size: 22px 22px;
+  background-position: -11px -11px;
+}
+
+/*
+  Fixed, not absolute: the shapes must not contribute to the stage's scrollable
+  area, or they would create phantom scroll of their own.
+
+  They sit BEHIND the panel (z-index 0 vs 1), so they can never swallow a click
+  meant for the form — but they are grabbable everywhere else.
+*/
+/*
+  Position is owned entirely by the physics loop in Shapes.js, which writes
+  `transform`. Anchoring these at 0,0 means the transform IS the position —
+  no CSS offset sitting between the layout box and where the shape appears,
+  which is what keeps the collision maths honest.
+*/
+.shape {
+  position: fixed;
+  left: 0;
+  top: 0;
+  border: var(--border);
+  z-index: 0;
+  cursor: grab;
+  /* stops a touch-drag from scrolling the page instead of moving the shape */
+  touch-action: none;
+  will-change: transform;
+  transition: box-shadow 0.15s var(--snap);
+}
+
+.shape.is-grabbed {
+  cursor: grabbing;
+  z-index: 3;
+  box-shadow: var(--lift-2);
+}
+
+/* the flash of impact */
+.shape.is-bumped {
+  box-shadow: 0 0 0 7px var(--ink);
+}
+
+.shape-1 {
+  width: 190px;
+  height: 190px;
+  background: var(--cyan);
+  border-radius: 50%;
+}
+
+.shape-2 {
+  width: 150px;
+  height: 150px;
+  background: var(--lime);
+}
+
+/*
+  The triangle needs its outline drawn, not bordered.
+
+  `clip-path` clips the element's border along with everything else, so a
+  `border: 3px` on a clipped triangle is simply cut away — which is why this
+  one was the only shape with no outline. The fix is two stacked triangles: an
+  ink one at full size, and a slightly smaller coloured one on top of it. What
+  shows around the edge IS the outline.
+
+  The insets are uneven on purpose. A uniform inset would not give a uniform
+  outline: at the apex the two edges meet at a sharp angle, so clearing 3px
+  perpendicular to them takes about 8px of vertical travel. Hence 8 at the top
+  and 3 at the bottom, where the edge is flat.
+*/
+.shape-3 {
+  width: 112px;
+  height: 112px;
+  background: var(--ink);
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+  border: none;
+}
+
+.shape-3::after {
+  content: "";
+  position: absolute;
+  inset: 8px 5px 3px;
+  background: var(--pink);
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+
+.shape-4 {
+  width: 96px;
+  height: 96px;
+  background: var(--tangerine);
+}
+
+/* the old background colour, kept alive as an object */
+.shape-5 {
+  width: 78px;
+  height: 78px;
+  background: var(--periwinkle);
+  border-radius: 50%;
+}
+
+/* --------------------------------------------------------------------------
+   The one piece of instruction on the page. Deliberately quiet: a small
+   printed chip in the corner that removes itself the moment you grab anything,
+   because by then it has said all it has to say.
+   -------------------------------------------------------------------------- */
+
+.drag-hint {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 2;
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--paper);
+  border: var(--border-thin);
+  box-shadow: var(--lift-0);
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  pointer-events: none;
+  animation: fade-up 0.5s var(--snap) 1.1s both;
+  transition: opacity 0.4s ease, transform 0.4s var(--snap);
+}
+
+.drag-hint.is-used {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+/* --------------------------------------------------------------------------
+   Impact burst — the comic sound-effect that fires when a shape hits the panel.
+
+   A rotated sticker rather than a clip-path starburst, deliberately: clip-path
+   would cut the border off with it, and the drawn outline is the whole point
+   of the style. The radiating dashes do the "impact" work instead.
+   -------------------------------------------------------------------------- */
+
+.impact {
+  position: fixed;
+  z-index: 4;
+  padding: 7px 12px;
+  background: var(--lime);
+  border: var(--border);
+  box-shadow: var(--lift-1);
+  font-family: "Archivo Black", sans-serif;
+  font-size: 15px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: impact 0.62s var(--snap) both;
+}
+
+/* the little speed lines either side */
+.impact::before,
+.impact::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 13px;
+  height: 3px;
+  background: var(--ink);
+}
+
+.impact::before {
+  left: -19px;
+  transform: rotate(-24deg);
+}
+
+.impact::after {
+  right: -19px;
+  transform: rotate(24deg);
+}
+
+@keyframes impact {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.2) rotate(-26deg);
+  }
+  45% {
+    opacity: 1;
+    transform: translate(-50%, -60%) scale(1.14) rotate(-7deg);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(-50%, -62%) scale(1) rotate(-7deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -78%) scale(0.94) rotate(-7deg);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   THE PANEL
+   -------------------------------------------------------------------------- */
+
+.panel {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  margin: auto;   /* centres without clipping — see .stage */
+  background: var(--paper);
+  border: var(--border);
+  box-shadow: var(--lift-panel);
+  animation: drop 0.55s var(--snap) both;
+}
+
+/*
+  Only transform and opacity here — deliberately.
+
+  The shadow IS the look, so it must never depend on an animation completing.
+  An entry animation that also faded the shadow in would leave the panel flat
+  and shadowless any time the animation stalled: a background tab, a throttled
+  or non-compositing frame, a paused timeline. Keeping box-shadow as a static
+  declaration means the panel is correct at every point in its life, and the
+  animation only ever moves it.
+
+  Transform and opacity are also the two properties the compositor can animate
+  without re-painting, so this is the cheaper version too.
+*/
+@keyframes drop {
+  from {
+    opacity: 0;
+    transform: translateY(-38px) rotate(-2deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0deg);
+  }
+}
+
+
+.panel-body {
+  padding: 20px 22px 18px;
+}
+
+/* --------------------------------------------------------------------------
+   Type
+   -------------------------------------------------------------------------- */
+
+.header {
+  margin-bottom: 15px;
+}
+
+/*
+  The bottom margin looks generous and is not. The lime highlight behind
+  "Shookie" is painted with a 4px box-shadow spread, so it reaches 4px below
+  the text baseline box and eats most of the gap. This is measured from the
+  highlight, not the text.
+*/
+.title {
+  margin: 0 0 21px;
+  font-family: "Archivo Black", ui-sans-serif, sans-serif;
+  font-size: 30px;
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+/* the one flourish on the wordmark: a printed highlight behind it */
+.title span {
+  background: var(--lime);
+  box-shadow: 0 0 0 4px var(--lime);
+  padding: 0 1px;
+}
+
+.subtitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+/* --------------------------------------------------------------------------
+   Segmented switch — sign in / create account
+   -------------------------------------------------------------------------- */
+
+.segment {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.segment button {
+  flex: 1;
+  padding: 10px 8px;
+  border: var(--border);
+  background: var(--paper);
+  box-shadow: var(--lift-0);
+  color: var(--ink);
+  font-family: "Space Grotesk", sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.12s var(--snap), box-shadow 0.12s var(--snap),
+    background 0.12s ease;
+}
+
+.segment button:hover {
+  background: var(--cyan);
+  transform: translate(-2px, -2px);
+  box-shadow: var(--lift-1);
+}
+
+.segment button:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.segment button.active {
+  background: var(--pink);
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* --------------------------------------------------------------------------
+   Form swap animation — replayed on tab change via key={tab}
+   -------------------------------------------------------------------------- */
+
+.swap {
+  animation: swap-in 0.35s var(--snap) both;
+}
+
+@keyframes swap-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.fade-up {
+  animation: fade-up 0.45s var(--snap) both;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Ant Design overrides.
+   High specificity + !important because antd ships its own strong selectors.
+   -------------------------------------------------------------------------- */
+
+.panel .ant-form-item {
+  margin-bottom: 11px;
+}
+
+.panel .ant-form-item-label > label {
+  height: auto;
+  font-family: "Space Mono", ui-monospace, monospace !important;
+  font-size: 10.5px !important;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink) !important;
+}
+
+.panel .ant-input-affix-wrapper,
+.panel .ant-input {
+  background: var(--paper) !important;
+  border: var(--border) !important;
+  border-radius: 0 !important;
+  box-shadow: var(--lift-0) !important;
+  color: var(--ink) !important;
+  font-family: "Space Grotesk", sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 500;
+  padding-block: 6px;
+  transition: transform 0.12s var(--snap), box-shadow 0.12s var(--snap),
+    background 0.12s ease;
+}
+
+.panel .ant-input-affix-wrapper:hover {
+  background: #fff !important;
+}
+
+/* focus: the field lifts and the shadow turns cyan — unmistakable, and it
+   doubles as the keyboard focus indicator */
+.panel .ant-input-affix-wrapper:focus-within {
+  background: #fff !important;
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--cyan), 5px 5px 0 1px var(--ink) !important;
+}
+
+.panel .ant-input-affix-wrapper .ant-input {
+  border: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding-block: 0;
+}
+
+.panel .ant-input::placeholder {
+  color: rgba(20, 17, 15, 0.38) !important;
+  font-weight: 400;
+}
+
+.panel .ant-input-prefix {
+  margin-inline-end: 10px;
+  color: var(--ink);
+  opacity: 0.75;
+}
+
+.panel .ant-input-password-icon,
+.panel .ant-input-suffix .anticon {
+  color: var(--ink) !important;
+  opacity: 0.6;
+}
+
+.panel .ant-form-item-explain-error {
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--danger) !important;
+  padding-top: 4px;
+}
+
+/* ---- buttons: the press physics live here ---- */
+
+.panel .ant-btn {
+  height: auto;
+  padding: 11px 16px;
+  border: var(--border) !important;
+  border-radius: 0 !important;
+  box-shadow: var(--lift-1) !important;
+  font-family: "Archivo Black", sans-serif !important;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: transform 0.12s var(--snap), box-shadow 0.12s var(--snap),
+    background 0.12s ease !important;
+}
+
+.panel .ant-btn-primary {
+  background: var(--lime) !important;
+  color: var(--ink) !important;
+}
+
+.panel .ant-btn-default {
+  background: var(--paper) !important;
+  color: var(--ink) !important;
+}
+
+.panel .ant-btn-default.ant-btn-dangerous {
+  background: var(--danger) !important;
+  color: var(--paper) !important;
+}
+
+.panel .ant-btn:not(:disabled):hover {
+  transform: translate(-3px, -3px);
+  box-shadow: var(--lift-2) !important;
+}
+
+/* driven into the page — the shadow collapses to nothing */
+.panel .ant-btn:not(:disabled):active {
+  transform: translate(6px, 6px);
+  box-shadow: 0 0 0 var(--ink) !important;
+}
+
+.panel .ant-btn:disabled {
+  opacity: 0.55;
+  box-shadow: var(--lift-0) !important;
+}
+
+.panel .ant-btn .ant-btn-loading-icon {
+  color: var(--ink);
+}
+
+/* ---- alerts: a stamped notice, not a soft toast ---- */
+
+.panel .ant-alert {
+  border: var(--border) !important;
+  border-radius: 0 !important;
+  box-shadow: var(--lift-0);
+  padding: 10px 13px;
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  animation: shake 0.4s ease both;
+}
+
+.panel .ant-alert-success {
+  background: var(--lime) !important;
+}
+
+.panel .ant-alert-error {
+  background: var(--danger) !important;
+}
+
+.panel .ant-alert-error .ant-alert-message,
+.panel .ant-alert-error .anticon {
+  color: var(--paper) !important;
+}
+
+.panel .ant-alert-success .ant-alert-message,
+.panel .ant-alert-success .anticon {
+  color: var(--ink) !important;
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-5px);
+  }
+  75% {
+    transform: translateX(5px);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Account screen
+   -------------------------------------------------------------------------- */
+
+.account-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 15px;
+  margin-bottom: 20px;
+}
+
+/* a square stamp, not a circle avatar */
+.account-avatar {
+  flex: none;
+  width: 62px;
+  height: 62px;
+  display: grid;
+  place-items: center;
+  background: var(--tangerine);
+  border: var(--border);
+  box-shadow: var(--lift-1);
+  font-family: "Archivo Black", sans-serif;
+  font-size: 28px;
+  color: var(--ink);
+  transform: rotate(-4deg);
+  animation: thud 0.5s var(--snap) both;
+}
+
+.account-id {
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.account-name {
+  margin: 0;
+  font-family: "Archivo Black", sans-serif;
+  font-size: 23px;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+
+.account-status {
+  display: inline-block;
+  margin: 9px 0 0;
+  padding: 3px 8px;
+  background: var(--lime);
+  border: var(--border-thin);
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transform: rotate(-2deg);
+  animation: thud 0.5s var(--snap) 0.12s both;
+}
+
+.account-email {
+  margin: 10px 0 0;
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* the stamp lands: oversized and crooked, then thuds into place */
+@keyframes thud {
+  from {
+    opacity: 0;
+    transform: scale(2.1) rotate(-24deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(-4deg);
+  }
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+.actions .ant-btn {
+  flex: 1;
+}
+
+/* --------------------------------------------------------------------------
+   Admin panel — the workstation list
+   --------------------------------------------------------------------------
+   Wider than the sign-in card, because this one holds a list of people rather
+   than four fields. Everything else obeys the same four rules as the rest of
+   the page: nothing round, every edge drawn, hard shadows, press physics.
+   -------------------------------------------------------------------------- */
+
+.panel.is-admin {
+  max-width: 520px;
+}
+
+.admin {
+  margin-bottom: 18px;
+  padding-top: 16px;
+  border-top: var(--border);
+}
+
+.admin-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.admin-title {
+  margin: 0;
+  font-family: "Archivo Black", sans-serif;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.admin-refresh {
+  padding: 4px 10px;
+  background: var(--paper);
+  border: var(--border-thin);
+  box-shadow: var(--lift-0);
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 0.12s var(--snap), box-shadow 0.12s var(--snap);
+}
+
+.admin-refresh:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--lift-1);
+}
+
+/* driven into the page, shadow collapsed — the signature press */
+.admin-refresh:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: none;
+}
+
+.admin-refresh:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.admin-empty {
+  margin: 0;
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.worker-list {
+  /*
+    A scroll cap, so a hundred workers cannot push the Sign out button off the
+    bottom of the screen. The panel keeps its shape whatever the payroll does.
+  */
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.worker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  margin-bottom: 9px;
+  background: var(--paper);
+  border: var(--border-thin);
+  box-shadow: var(--lift-0);
+}
+
+.worker-id {
+  flex: 1;
+  min-width: 0;
+}
+
+.worker-name {
+  display: block;
+  font-weight: 700;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.worker-username {
+  display: block;
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 11px;
+  opacity: 0.6;
+  overflow-wrap: anywhere;
+}
+
+/*
+  Bound vs unbound is the one thing an admin scans this list for, so it is
+  carried by fill colour and not by a word alone — lime for claimed, bare paper
+  for free. The word is still there for anyone who cannot use the colour.
+*/
+.worker-tag {
+  flex: none;
+  padding: 3px 7px;
+  background: var(--paper);
+  border: var(--border-thin);
+  font-family: "Space Mono", ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.worker-tag.is-bound {
+  background: var(--lime);
+}
+
+@media (max-width: 420px) {
+  .worker {
+    flex-wrap: wrap;
+  }
+  .worker-id {
+    flex-basis: 100%;
+  }
+}
+
+/*
+  The reset confirmation.
+
+  Ant renders a Popconfirm into a portal at the end of <body>, which puts it
+  outside .panel and therefore out of reach of every `.panel .ant-*` rule in
+  this file. So these are unscoped on purpose — it is the one piece of UI that
+  cannot inherit the panel's styling by nesting, and without them the only
+  rounded, soft-shadowed thing on the page would be the dialog that asks
+  before signing someone out.
+*/
+.ant-popover .ant-popover-inner {
+  border-radius: 0;
+  border: var(--border);
+  box-shadow: var(--lift-1);
+  background: var(--paper);
+}
+
+.ant-popover .ant-popover-arrow {
+  display: none;
+}
+
+.ant-popover .ant-popover-title {
+  font-family: "Archivo Black", sans-serif;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+
+.ant-popover .ant-btn {
+  border-radius: 0;
+  border: var(--border-thin);
+  box-shadow: var(--lift-0);
+  font-weight: 700;
+}
+
+/* --------------------------------------------------------------------------
+   Loading — blocks, not a smooth circle
+   -------------------------------------------------------------------------- */
+
+.loading {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  background: var(--ground);
+  /* periwinkle dots — ink dots read as harsh grit on a light ground */
+  background-image: radial-gradient(var(--dot) 2px, transparent 2px);
+  background-size: 22px 22px;
+}
+
+.spinner {
+  display: flex;
+  gap: 7px;
+}
+
+.spinner i {
+  width: 17px;
+  height: 17px;
+  background: var(--paper);
+  border: var(--border);
+  animation: stack 0.9s ease-in-out infinite;
+}
+
+.spinner i:nth-child(2) {
+  background: var(--lime);
+  animation-delay: 0.13s;
+}
+
+.spinner i:nth-child(3) {
+  background: var(--pink);
+  animation-delay: 0.26s;
+}
+
+@keyframes stack {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-13px);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Accessibility floor
+   -------------------------------------------------------------------------- */
+
+.segment button:focus-visible,
+.panel .ant-btn:focus-visible {
+  outline: 3px solid var(--cyan);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .shape {
+    animation: none;
+  }
+}
+
+@media (max-width: 420px) {
+  :root {
+    --lift-panel: 7px 7px 0 var(--ink);
+  }
+  .title {
+    font-size: 28px;
+  }
+  .panel-body {
+    padding: 22px 18px 18px;
+  }
+  .actions {
+    flex-direction: column;
+  }
+}

@@ -1,0 +1,20 @@
+# Java / Maven
+backend/target/
+backend/data/
+
+# TLS private key — a keystore is a secret and never goes in version control,
+# not even a self-signed development one. Recreate it with backend/make-keystore.cmd
+backend/src/main/resources/keystore.p12
+*.p12
+*.jks
+
+# Node / React
+frontend/node_modules/
+frontend/build/
+
+# Editors & OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
