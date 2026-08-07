@@ -195,7 +195,8 @@ cookie/
 │     ├─ api.js                   ◆ the fetch() calls to Java
 │     └─ brutal.css               ◆ the neo-brutalist theme
 │
-└─ DEPLOYMENT.md                  ◆ Vercel + Koyeb + Neon, start to finish
+├─ DEPLOYMENT.md                  ◆ Vercel + Koyeb + Neon, start to finish
+└─ HARDENING.md                   ◆ browser lockdown, and the lockout escape hatch
 ```
 
 ◆ = new or changed by the device-binding work.
