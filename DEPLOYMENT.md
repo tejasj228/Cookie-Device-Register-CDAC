@@ -6,7 +6,7 @@ The app is one thing to a browser and three things to you.
 |---|---|---|
 | React build | **Vercel** | Static files on a CDN, which is what Vercel is best at |
 | Spring Boot API | **Koyeb** (Docker) | Vercel cannot run a JVM — see below |
-| Postgres | **Neon** | Managed, free tier, no server to look after |
+| Postgres | **Neon** | Managed, free tier, created from Vercel's own dashboard |
 
 ---
 
@@ -68,40 +68,122 @@ at the bottom of this file, and it is strictly worse.
 
 ---
 
-## 1. Neon — the database
+## Order of operations
 
-1. Create a project at [neon.tech](https://neon.tech). Any region; pick one near
-   your Koyeb region to save a few milliseconds per query.
-2. Open **Connection Details** and copy the connection string. Neon shows you a
-   `postgresql://user:pass@host/db` URL — **JDBC needs a different shape**, so
-   convert it:
+Creating the database from Vercel means the Vercel project has to exist first —
+it is what the integration attaches the database to. So the sequence is:
 
-   ```
-   Neon gives you:
-     postgresql://neondb_owner:npg_XXXX@ep-cool-name-12345.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+```
+1. Vercel project   (so there is something to attach a database to)
+2. Neon database    (created from inside Vercel)
+3. Koyeb API        (needs the database credentials from step 2)
+4. Rewrite + push   (needs the Koyeb hostname from step 3)
+```
 
-   You need three separate values:
-     SPRING_DATASOURCE_URL       jdbc:postgresql://ep-cool-name-12345.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
-     SPRING_DATASOURCE_USERNAME  neondb_owner
-     SPRING_DATASOURCE_PASSWORD  npg_XXXX
-   ```
-
-   Three things to get right: the `jdbc:` prefix, the credentials pulled **out**
-   of the URL into their own variables, and `sslmode=require` kept — the
-   connection crosses the public internet.
-
-3. If Neon offers you a **pooled** connection string, use it. The pooler keeps a
-   handful of app connections from becoming a handful more every time the
-   instance restarts.
-
-No schema to create. `spring.jpa.hibernate.ddl-auto=update` builds `APP_USER` and
-`USER_SESSION` on first boot. (For anything real you would replace that with
-Flyway, so schema changes are reviewed files rather than something Hibernate
-infers at startup and applies to a live database on its own.)
+The site is live but non-functional between steps 1 and 4. That is expected —
+the login form is there, but `/api/login` has nowhere to go until step 4.
 
 ---
 
-## 2. Koyeb — the API
+## 1. Vercel — the frontend project
+
+Import the repo at [vercel.com](https://vercel.com) with:
+
+- **Root Directory:** `frontend`
+- Framework, build command and output directory come from `vercel.json`.
+
+Add **no** environment variables. Leaving `REACT_APP_API_BASE` unset is what
+makes the frontend call relative `/api/...` URLs so the rewrite can do its job.
+
+The build will succeed and the site will load. Signing in will not work yet.
+
+---
+
+## 2. Neon — the database
+
+Create the database through the **Neon integration in the Vercel dashboard**:
+**Storage → Create Database → Neon**, or the
+[Neon listing on the Vercel Marketplace](https://vercel.com/marketplace/neon).
+Choosing the *Vercel-managed* option creates the Neon account and project for
+you and keeps billing inside Vercel, so there is nothing to set up on neon.com
+first.
+
+When it finishes, the integration writes a set of variables into your **Vercel
+project's** environment:
+
+```
+DATABASE_URL             pooled connection   (through PgBouncer)
+DATABASE_URL_UNPOOLED    direct connection
+POSTGRES_URL, PGHOST, PGUSER, PGPASSWORD, PGDATABASE   (legacy aliases)
+```
+
+### The catch: those variables are in the wrong place
+
+The integration wires the database into **Vercel**, and our JVM does not run on
+Vercel — it runs on Koyeb. Vercel environment variables are visible only to
+Vercel builds and functions, so the backend will never see them. You have to
+read the values out of Vercel and paste them into Koyeb by hand, once.
+
+Open **Vercel → your project → Settings → Environment Variables**, reveal
+`DATABASE_URL_UNPOOLED`, and take it apart.
+
+*(This is harmless for the frontend, incidentally: Create React App only inlines
+variables prefixed `REACT_APP_`, so a database password sitting in the Vercel
+build environment cannot end up in your JavaScript bundle.)*
+
+### Use the UNPOOLED one
+
+Not `DATABASE_URL`, despite it being the one Vercel presents first. The pooled
+endpoint is PgBouncer in **transaction** mode, and the Postgres JDBC driver
+promotes queries to server-side prepared statements after a few executions. Those
+two disagree: the prepared statement is created on one pooled backend and the
+next execution is routed to a different one, producing sporadic
+`prepared statement "S_1" already exists` errors under load — the worst kind of
+bug, because it needs traffic to show up and looks like nothing at all in
+testing.
+
+You would want the pooler if you were running many short-lived instances. You are
+running **one** always-on container with a Hikari pool of 5
+(`DB_POOL_SIZE`), which is nothing against Neon's connection limit. Direct is
+both simpler and safer here.
+
+If you ever scale to several instances, switch to `DATABASE_URL` and add
+`&prepareThreshold=0` to disable driver-side prepared statements.
+
+### Converting to JDBC
+
+Neon hands you a URL with the credentials embedded. **JDBC needs a different
+shape**, split into three values:
+
+```
+DATABASE_URL_UNPOOLED gives you:
+  postgresql://neondb_owner:npg_XXXX@ep-cool-name-12345.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
+
+You need:
+  SPRING_DATASOURCE_URL       jdbc:postgresql://ep-cool-name-12345.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+  SPRING_DATASOURCE_USERNAME  neondb_owner
+  SPRING_DATASOURCE_PASSWORD  npg_XXXX
+```
+
+Four things to get right:
+
+- the **`jdbc:`** prefix on the front (and `postgresql://`, not `postgres://`)
+- the **credentials pulled out** of the URL into their own variables
+- **`sslmode=require` kept** — this connection crosses the public internet
+- **everything else dropped.** Strip `channel_binding`, `options` and any other
+  parameter Neon appended. They are for `libpq`-based clients; the JDBC driver
+  does not need them and can object to them.
+
+### The schema
+
+Nothing to create. `spring.jpa.hibernate.ddl-auto=update` builds `APP_USER` and
+`USER_SESSION` on first boot. (For anything real, replace that with Flyway, so
+schema changes are reviewed files rather than something Hibernate infers at
+startup and applies to a live database on its own.)
+
+---
+
+## 3. Koyeb — the API
 
 Sign in at [koyeb.com](https://koyeb.com) with GitHub, then **Create Web Service**:
 
@@ -133,7 +215,7 @@ Then set the environment variables:
 | Variable | Value | Why |
 |---|---|---|
 | `PORT` | `8000` | must match the service port above |
-| `SPRING_DATASOURCE_URL` | the `jdbc:` URL from step 1 | |
+| `SPRING_DATASOURCE_URL` | the `jdbc:` URL from step 2 | |
 | `SPRING_DATASOURCE_USERNAME` | Neon user | |
 | `SPRING_DATASOURCE_PASSWORD` | Neon password | mark it **Secret** |
 | `APP_BOOTSTRAP_ADMIN_USERNAME` | your admin login | **set this** |
@@ -165,7 +247,7 @@ Spring handled it, and Neon was reachable.
 
 ---
 
-## 3. Point the frontend at it
+## 4. Point the frontend at it
 
 Edit `frontend/vercel.json` and replace the placeholder with your Koyeb hostname:
 
@@ -183,22 +265,11 @@ rewrite destinations. Commit and push:
 git add frontend/vercel.json && git commit -m "Point the API rewrite at Koyeb" && git push
 ```
 
----
-
-## 4. Vercel — the frontend
-
-Import the repo at [vercel.com](https://vercel.com) with:
-
-- **Root Directory:** `frontend`
-- Framework, build command and output directory are all picked up from
-  `vercel.json`.
-
-No environment variables. `REACT_APP_API_BASE` stays unset, which is what makes
-the frontend call relative `/api/...` URLs and lets the rewrite do its job.
+Vercel redeploys on the push. Now the site works end to end.
 
 ---
 
-## 5. After the first deploy
+## 5. Verify
 
 1. Open the Vercel URL. You should get the sign-in panel.
 2. Sign in as your admin. You should see **Workstations** — an empty list.
